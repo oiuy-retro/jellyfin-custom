@@ -30,6 +30,7 @@ using MediaBrowser.Controller.Events.Session;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Net;
 using MediaBrowser.Controller.Session;
+using MediaBrowser.Controller.TV;
 using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.Library;
@@ -40,6 +41,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Episode = MediaBrowser.Controller.Entities.TV.Episode;
+using Series = MediaBrowser.Controller.Entities.TV.Series;
 
 namespace Emby.Server.Implementations.Session
 {
@@ -60,6 +62,7 @@ namespace Emby.Server.Implementations.Session
         private readonly IMediaSourceManager _mediaSourceManager;
         private readonly IServerApplicationHost _appHost;
         private readonly IDeviceManager _deviceManager;
+        private readonly ISeriesShuffleManager _seriesShuffleManager;
         private readonly CancellationTokenRegistration _shutdownCallback;
         private readonly ConcurrentDictionary<string, SessionInfo> _activeConnections
             = new(StringComparer.OrdinalIgnoreCase);
@@ -89,6 +92,7 @@ namespace Emby.Server.Implementations.Session
         /// <param name="deviceManager">Instance of <see cref="IDeviceManager"/> interface.</param>
         /// <param name="mediaSourceManager">Instance of <see cref="IMediaSourceManager"/> interface.</param>
         /// <param name="hostApplicationLifetime">Instance of <see cref="IHostApplicationLifetime"/> interface.</param>
+        /// <param name="seriesShuffleManager">Optional instance of <see cref="ISeriesShuffleManager"/> interface.</param>
         public SessionManager(
             ILogger<SessionManager> logger,
             IEventManager eventManager,
@@ -102,7 +106,8 @@ namespace Emby.Server.Implementations.Session
             IServerApplicationHost appHost,
             IDeviceManager deviceManager,
             IMediaSourceManager mediaSourceManager,
-            IHostApplicationLifetime hostApplicationLifetime)
+            IHostApplicationLifetime hostApplicationLifetime,
+            ISeriesShuffleManager seriesShuffleManager = null)
         {
             _logger = logger;
             _eventManager = eventManager;
@@ -116,6 +121,7 @@ namespace Emby.Server.Implementations.Session
             _appHost = appHost;
             _deviceManager = deviceManager;
             _mediaSourceManager = mediaSourceManager;
+            _seriesShuffleManager = seriesShuffleManager;
             _shutdownCallback = hostApplicationLifetime.ApplicationStopping.Register(OnApplicationStopping);
 
             _deviceManager.DeviceOptionsUpdated += OnDeviceManagerDeviceOptionsUpdated;
@@ -791,6 +797,7 @@ namespace Emby.Server.Implementations.Session
                 foreach (var user in users)
                 {
                     OnPlaybackStart(user, progressItem);
+                    ReportEpisodeShuffleState(user, libraryItem, info, toggledOffInActiveSession: false);
                 }
             }
 
@@ -912,6 +919,9 @@ namespace Emby.Server.Implementations.Session
                 return;
             }
 
+            var previousItemId = session.NowPlayingItem?.Id;
+            var previousPlaybackOrder = session.PlayState?.PlaybackOrder ?? PlaybackOrder.Default;
+
             var libraryItem = info.ItemId.IsEmpty()
                 ? null
                 : GetNowPlayingItem(session, info.ItemId);
@@ -929,9 +939,15 @@ namespace Emby.Server.Implementations.Session
             if (libraryItem is not null && !isAutomated)
             {
                 var progressItem = GetProgressItem(libraryItem, info.MediaSourceId);
+                var toggledOffInActiveSession = previousItemId.HasValue
+                    && previousItemId.Value.Equals(info.ItemId)
+                    && previousPlaybackOrder == PlaybackOrder.Shuffle
+                    && info.PlaybackOrder == PlaybackOrder.Default;
+
                 foreach (var user in users)
                 {
                     OnPlaybackProgress(user, progressItem, info);
+                    ReportEpisodeShuffleState(user, libraryItem, info, toggledOffInActiveSession);
                 }
             }
 
@@ -1011,6 +1027,35 @@ namespace Emby.Server.Implementations.Session
             {
                 _userDataManager.ResetPlaybackStreamSelections(user, item);
             }
+        }
+
+        private void ReportEpisodeShuffleState(User user, BaseItem libraryItem, PlaybackProgressInfo info, bool toggledOffInActiveSession)
+        {
+            if (_seriesShuffleManager is null || libraryItem is not Episode episode || episode.SeriesId.IsEmpty())
+            {
+                return;
+            }
+
+            var primaryEpisodeId = episode.PrimaryVersionId is { } pv && !pv.IsEmpty()
+                ? pv
+                : episode.Id;
+            var queueIds = info.NowPlayingQueue?
+                .Select(q => q.Id)
+                .Where(id => !id.IsEmpty())
+                .ToList();
+
+            _seriesShuffleManager.OnPlaybackReported(
+                user.Id,
+                episode.SeriesId,
+                episode.SeriesPresentationUniqueKey,
+                primaryEpisodeId,
+                info.PlaybackOrder,
+                toggledOffInActiveSession,
+                queueIds,
+                () => (_libraryManager.GetItemById(episode.SeriesId) as Series)?
+                    .GetEpisodes(user, new DtoOptions(false), false)
+                    .Select(e => e.Id)
+                    .ToList() ?? []);
         }
 
         private static bool UpdatePlaybackSettings(User user, PlaybackProgressInfo info, UserItemData data)
@@ -1145,6 +1190,13 @@ namespace Emby.Server.Implementations.Session
                 foreach (var user in users)
                 {
                     playedToCompletion = OnPlaybackStopped(user, progressItem, info.PositionTicks, info.Failed);
+                    if (_seriesShuffleManager is not null && libraryItem is Episode stoppedEpisode && !stoppedEpisode.SeriesId.IsEmpty())
+                    {
+                        var primaryEpisodeId = stoppedEpisode.PrimaryVersionId is { } pv && !pv.IsEmpty()
+                            ? pv
+                            : stoppedEpisode.Id;
+                        _seriesShuffleManager.OnEpisodePlaybackStopped(user.Id, stoppedEpisode.SeriesId, primaryEpisodeId, playedToCompletion);
+                    }
                 }
             }
 

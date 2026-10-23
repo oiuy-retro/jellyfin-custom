@@ -25,12 +25,18 @@ namespace Emby.Server.Implementations.TV
         private readonly IUserDataManager _userDataManager;
         private readonly ILibraryManager _libraryManager;
         private readonly IServerConfigurationManager _configurationManager;
+        private readonly ISeriesShuffleManager? _seriesShuffleManager;
 
-        public TVSeriesManager(IUserDataManager userDataManager, ILibraryManager libraryManager, IServerConfigurationManager configurationManager)
+        public TVSeriesManager(
+            IUserDataManager userDataManager,
+            ILibraryManager libraryManager,
+            IServerConfigurationManager configurationManager,
+            ISeriesShuffleManager? seriesShuffleManager = null)
         {
             _userDataManager = userDataManager;
             _libraryManager = libraryManager;
             _configurationManager = configurationManager;
+            _seriesShuffleManager = seriesShuffleManager;
         }
 
         public QueryResult<BaseItem> GetNextUp(NextUpQuery query, DtoOptions options)
@@ -48,7 +54,7 @@ namespace Emby.Server.Implementations.TV
 
             if (!string.IsNullOrEmpty(presentationUniqueKey))
             {
-                return GetNextUpBatched(query, user, [presentationUniqueKey], options);
+                return GetNextUpBatched(query, user, [presentationUniqueKey], options, null);
             }
 
             BaseItem[] parents;
@@ -94,7 +100,7 @@ namespace Emby.Server.Implementations.TV
 
             if (!string.IsNullOrEmpty(presentationUniqueKey))
             {
-                return GetNextUpBatched(request, user, [presentationUniqueKey], options);
+                return GetNextUpBatched(request, user, [presentationUniqueKey], options, parentsFolders);
             }
 
             if (limit.HasValue)
@@ -104,10 +110,42 @@ namespace Emby.Server.Implementations.TV
 
             var nextUpSeriesKeys = _libraryManager.GetNextUpSeriesKeys(new InternalItemsQuery(user) { Limit = limit }, parentsFolders, request.NextUpDateCutoff);
 
-            return GetNextUpBatched(request, user, nextUpSeriesKeys, options);
+            if (_seriesShuffleManager is not null)
+            {
+                var shuffledKeys = _seriesShuffleManager.GetActiveSeriesPresentationKeys(user.Id, request.NextUpDateCutoff);
+                if (shuffledKeys.Count > 0)
+                {
+                    var combinedKeys = new List<string>(nextUpSeriesKeys.Count + shuffledKeys.Count);
+                    var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var key in nextUpSeriesKeys)
+                    {
+                        if (!string.IsNullOrEmpty(key) && seen.Add(key))
+                        {
+                            combinedKeys.Add(key);
+                        }
+                    }
+
+                    foreach (var key in shuffledKeys)
+                    {
+                        if (!string.IsNullOrEmpty(key) && seen.Add(key))
+                        {
+                            combinedKeys.Add(key);
+                        }
+                    }
+
+                    nextUpSeriesKeys = combinedKeys;
+                }
+            }
+
+            return GetNextUpBatched(request, user, nextUpSeriesKeys, options, parentsFolders);
         }
 
-        private QueryResult<BaseItem> GetNextUpBatched(NextUpQuery request, User user, IReadOnlyList<string> seriesKeys, DtoOptions dtoOptions)
+        private QueryResult<BaseItem> GetNextUpBatched(
+            NextUpQuery request,
+            User user,
+            IReadOnlyList<string> seriesKeys,
+            DtoOptions dtoOptions,
+            IReadOnlyList<BaseItem>? parentsFolders)
         {
             if (seriesKeys.Count == 0)
             {
@@ -128,7 +166,43 @@ namespace Emby.Server.Implementations.TV
 
             foreach (var seriesKey in seriesKeys)
             {
-                if (!batchResult.TryGetValue(seriesKey, out var result))
+                batchResult.TryGetValue(seriesKey, out var result);
+
+                var candidateSeriesId = request.SeriesId
+                    ?? (result?.LastWatched as Episode)?.SeriesId
+                    ?? (result?.NextUp as Episode)?.SeriesId;
+
+                if (_seriesShuffleManager is not null
+                    && _seriesShuffleManager.TryGetNextUpEpisode(
+                        user,
+                        seriesKey,
+                        candidateSeriesId,
+                        parentsFolders,
+                        request.EnableResumable,
+                        _libraryManager,
+                        _userDataManager,
+                        out var shuffledNextEpisode,
+                        out var shuffledLastWatchedDate))
+                {
+                    if (shuffledNextEpisode is not null)
+                    {
+                        if (result?.LastWatched is not null)
+                        {
+                            var (playedVersion, lastPlayedDate) = GetMostRecentlyPlayedVersion(result.LastWatched, user);
+                            shuffledNextEpisode = GetPreferredVersion(shuffledNextEpisode, result.LastWatched, playedVersion);
+                            if (lastPlayedDate.HasValue && lastPlayedDate.Value > shuffledLastWatchedDate)
+                            {
+                                shuffledLastWatchedDate = lastPlayedDate.Value;
+                            }
+                        }
+
+                        nextUpList.Add((shuffledLastWatchedDate, shuffledNextEpisode));
+                    }
+
+                    continue;
+                }
+
+                if (result is null)
                 {
                     continue;
                 }

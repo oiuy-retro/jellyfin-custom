@@ -14,9 +14,11 @@ using MediaBrowser.Common.Extensions;
 using MediaBrowser.Controller.Dto;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
+using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Playlists;
 using MediaBrowser.Controller.Session;
+using MediaBrowser.Controller.TV;
 using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.Globalization;
@@ -44,6 +46,7 @@ public class ItemsController : BaseJellyfinApiController
     private readonly ISessionManager _sessionManager;
     private readonly IUserDataManager _userDataRepository;
     private readonly ISearchManager _searchManager;
+    private readonly ISeriesShuffleManager? _seriesShuffleManager;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="ItemsController"/> class.
@@ -56,6 +59,7 @@ public class ItemsController : BaseJellyfinApiController
     /// <param name="sessionManager">Instance of the <see cref="ISessionManager"/> interface.</param>
     /// <param name="userDataRepository">Instance of the <see cref="IUserDataManager"/> interface.</param>
     /// <param name="searchManager">Instance of the <see cref="ISearchManager"/> interface.</param>
+    /// <param name="seriesShuffleManager">Optional instance of the <see cref="ISeriesShuffleManager"/> interface.</param>
     public ItemsController(
         IUserManager userManager,
         ILibraryManager libraryManager,
@@ -64,7 +68,8 @@ public class ItemsController : BaseJellyfinApiController
         ILogger<ItemsController> logger,
         ISessionManager sessionManager,
         IUserDataManager userDataRepository,
-        ISearchManager searchManager)
+        ISearchManager searchManager,
+        ISeriesShuffleManager? seriesShuffleManager = null)
     {
         _userManager = userManager;
         _libraryManager = libraryManager;
@@ -74,6 +79,7 @@ public class ItemsController : BaseJellyfinApiController
         _sessionManager = sessionManager;
         _userDataRepository = userDataRepository;
         _searchManager = searchManager;
+        _seriesShuffleManager = seriesShuffleManager;
     }
 
     /// <summary>
@@ -621,6 +627,26 @@ public class ItemsController : BaseJellyfinApiController
         {
             var itemsArray = folder.GetChildren(user, true);
             result = new QueryResult<BaseItem>(itemsArray);
+        }
+
+        if (user is not null && _seriesShuffleManager is not null && sortBy.Contains(ItemSortBy.Random) && result.Items.Count > 0)
+        {
+            if (item is Series parentSeries)
+            {
+                var episodeIds = result.Items.OfType<Episode>().Select(e => e.Id).ToList();
+                if (episodeIds.Count > 0)
+                {
+                    _seriesShuffleManager.RecordSeriesShuffle(user.Id, parentSeries.Id, parentSeries.GetPresentationUniqueKey(), null, episodeIds);
+                }
+            }
+            else if (item is Season parentSeason && !parentSeason.SeriesId.IsEmpty())
+            {
+                var episodeIds = result.Items.OfType<Episode>().Select(e => e.Id).ToList();
+                if (episodeIds.Count > 0)
+                {
+                    _seriesShuffleManager.RecordSeriesShuffle(user.Id, parentSeason.SeriesId, parentSeason.SeriesPresentationUniqueKey, parentSeason.Id, episodeIds);
+                }
+            }
         }
 
         return new QueryResult<BaseItemDto>(

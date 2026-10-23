@@ -7,7 +7,7 @@ A personal build of the Jellyfin server that remembers when a TV show is being w
 > distributed under the same [GNU General Public License v2.0](LICENSE). It is not affiliated
 > with or supported by the upstream project — please don't report problems with this build to them.
 >
-> The original upstream README is kept in [docs/UPSTREAM_README.md](docs/UPSTREAM_README.md).
+> For what Jellyfin itself is and does, see [docs/ABOUT_JELLYFIN.md](docs/ABOUT_JELLYFIN.md).
 
 - Based on upstream `release-12.z` at commit `06de749d43` (the `v12.3` tag, 2026-10-22).
 - Server version: **12.3.0** (assembly and file version unchanged from upstream `v12.3`).
@@ -122,6 +122,7 @@ The full walkthrough is in [docs/UPDATING_FROM_UPSTREAM.md](docs/UPDATING_FROM_U
 - [docs/BUILDING.md](docs/BUILDING.md): build, publish, test, and troubleshooting instructions
 - [docs/CUSTOM_CHANGES.md](docs/CUSTOM_CHANGES.md): technical details of the custom server changes
 - [docs/UPDATING_FROM_UPSTREAM.md](docs/UPDATING_FROM_UPSTREAM.md): merging new upstream versions
+- [docs/ABOUT_JELLYFIN.md](docs/ABOUT_JELLYFIN.md): house-style overview of upstream Jellyfin and links to upstream docs
 - [docs/UPSTREAM_README.md](docs/UPSTREAM_README.md): the original upstream README
 
 ## License and credits

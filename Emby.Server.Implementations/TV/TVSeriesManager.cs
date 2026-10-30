@@ -179,6 +179,7 @@ namespace Emby.Server.Implementations.TV
                         candidateSeriesId,
                         parentsFolders,
                         request.EnableResumable,
+                        _configurationManager.Configuration.ShuffleSkipPlayed,
                         _libraryManager,
                         _userDataManager,
                         out var shuffledNextEpisode,

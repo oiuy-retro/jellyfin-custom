@@ -210,6 +210,12 @@ public class ServerConfiguration : BaseApplicationConfiguration
 
     public bool DisplaySpecialsWithinSeasons { get; set; } = true;
 
+    /// <summary>
+    /// Gets or sets a value indicating whether shuffled play queues leave out items the user has already played.
+    /// Music, music videos, audiobooks and books are never filtered. If every item is played, all items are shuffled.
+    /// </summary>
+    public bool ShuffleSkipPlayed { get; set; } = true;
+
     public string[] CodecsUsed { get; set; } = Array.Empty<string>();
 
     public RepositoryInfo[] PluginRepositories { get; set; } = Array.Empty<RepositoryInfo>();

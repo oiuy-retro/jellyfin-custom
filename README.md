@@ -40,7 +40,7 @@ This build fixes that on the server so it works across all Jellyfin clients (Jel
 
 - **Random Next Up (`GET /Shows/NextUp`):** In `TVSeriesManager`, when a series has shuffle active for a user, `GET /Shows/NextUp` returns the current front episode of the user's shuffled queue rather than the next sequential episode after the highest-numbered watched episode.
 - **No duplicate card when `enableResumable=false`:** If the front episode of the shuffle queue is currently in progress (`PlaybackPositionTicks > 0`) and the client requests `GET /Shows/NextUp?enableResumable=false` (to avoid duplicating the Continue Watching row), Next Up returns `null` for that series, matching upstream behavior.
-- **Works when rewatching completed shows:** Even if every episode of a series is already marked watched (`Played == true`), or if shuffle happens to play the series finale (`S05E10`), the series remains in Next Up with the next episode from the shuffled queue.
+- **Works when rewatching completed shows:** Even if every episode of a series is already marked watched (`Played == true`, see section 5 for the fallback), or if shuffle happens to play the series finale (`S05E10`), the series remains in Next Up with the next episode from the shuffled queue.
 
 ### 4. Switching a show back to sequential order
 
@@ -49,6 +49,19 @@ Shuffle mode stays active for a series until you explicitly switch back to seque
 - **Starting sequential series or season playback:** Calling `GET /Shows/{seriesId}/Episodes` with an explicit non-random sort order (such as `sortBy=SortName`, used by Android TV when clicking Play on a series or season) or calling `GET /Shows/{seriesId}/Episodes` for playback (`Fields` containing `MediaSources`) without `startItemId`, `adjacentTo`, or `sortBy=Random` clears the series' shuffle state for that user.
 - **Turning shuffle off in the player controls:** If a client is actively playing an episode with `PlaybackOrder.Shuffle` and switches to `PlaybackOrder.Default` on the same item during that session, the server clears the series' shuffle state for that user.
 - **Browsing does not clear shuffle:** Opening a series, season, or episode details page in the UI (`GET /Shows/{seriesId}/Episodes` without `MediaSources`) leaves the active shuffle state untouched and still lists episodes in normal season/episode order on the details page.
+
+### 5. Shuffle skips items you have already played
+
+Controlled by the server setting `ShuffleSkipPlayed` in `system.xml` (`<ShuffleSkipPlayed>true</ShuffleSkipPlayed>`, default `true`). Set it to `false` to get upstream behavior.
+
+- **Shuffle queues leave out played items:** `GET /Shows/{seriesId}/Episodes?sortBy=Random` and `GET /Items?sortBy=Random` (movies, collections, folders, video playlists, home videos) drop items marked played for the requesting user.
+- **In-progress items stay:** An item that is not marked played stays in the queue, including one with a saved position. In `/Shows/{seriesId}/Episodes`, an item marked played that has a saved position (a rewatch in progress) also stays.
+- **The episode you start or resume always stays:** With `startItemId`, that episode stays at index `0` even if it is marked played.
+- **Resuming a shuffled show:** When resuming from Continue Watching or Next Up with shuffle active, played episodes are removed from the rest of the saved queue. The saved queue itself is not changed, so marking an episode unplayed puts it back.
+- **Next Up:** For a shuffled series, Next Up shows the first episode in the shuffled queue that is not played.
+- **Everything played:** If every item is played, the whole list is shuffled as before instead of returning an empty queue. Next Up falls back to the front of the queue.
+- **Not applied to music or books:** Audio tracks, albums, artists, music genres, music videos, audiobooks, books, audio playlists, and anything inside a library of type Music, Music Videos, or Books are never filtered. Requests filtered by artist or album, or with `mediaTypes=Audio` or `Book`, are not filtered either.
+- **Explicit filters win:** If the request already sets `isPlayed` or `filters=IsPlayed/IsUnplayed`, the server does not change it.
 
 ## Install / Run
 
@@ -100,7 +113,9 @@ The server executable is written to `./publish/jellyfin` (or `./publish-win-x64/
 - **Server-side queue ordering:** When resuming from Continue Watching or Next Up, the client itself starts the playback session with its own local shuffle icon in its default (unhighlighted) state, because the client launched a single episode card rather than the series Shuffle button. Even though the client's shuffle icon is not lit, the queue of upcoming episodes loaded from the server is already in the saved random order.
 - **Season-level vs series-level shuffle:** If you click Shuffle on a specific season, resuming an episode from that season shuffles the remaining episodes of that season. If you later start an episode from a different season of the same show, the shuffle queue expands to the full series.
 - **Sequential Play button on a Series page in Jellyfin Web:** In Jellyfin Web, clicking the main Play button on a Series page first queries `GET /Shows/NextUp` and then calls `GET /Shows/{seriesId}/Episodes?startItemId={nextUpId}` with the same parameters as resuming an episode from the home screen. When shuffle is active for that series, clicking Play on the Series page in Jellyfin Web therefore resumes the shuffled queue. To switch a series back to sequential playback in Jellyfin Web, click Play on a Season page or toggle the shuffle button on and off inside the player controls.
-- **Testing:** Verified with unit tests in `SeriesShuffleManagerTests` (covering shuffle queue rotation on resume, JSON persistence across restarts, Next Up resolution on mid-episode stop and episode completion, in-player shuffle activation/deactivation, and `TvShowsController.GetEpisodes` behavior) and full Debug/Release builds of `Jellyfin.Server`.
+- **Skip-played scope:** Filtering is done by the server. Clients that shuffle locally from a list they already loaded (rather than asking the server for `sortBy=Random`) are not affected. In `GET /Items`, filtering uses the database's played flag, so a played item with a saved rewatch position is left out there.
+- **Paged random requests:** The all-played fallback in `GET /Items` only runs for the first page (`startIndex` 0 or unset).
+- **Testing:** Verified with unit tests in `SeriesShuffleManagerTests` (covering shuffle queue rotation on resume, JSON persistence across restarts, Next Up resolution on mid-episode stop and episode completion, in-player shuffle activation/deactivation, `TvShowsController.GetEpisodes` behavior, skip-played filtering with the all-played fallback and music exclusion, and Next Up skipping played episodes) and full Debug/Release builds of `Jellyfin.Server`.
 
 ## Staying in sync with upstream
 

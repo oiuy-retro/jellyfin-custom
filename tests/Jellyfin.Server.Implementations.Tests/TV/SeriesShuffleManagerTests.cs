@@ -169,6 +169,7 @@ public sealed class SeriesShuffleManagerTests : IDisposable
             seriesId,
             null,
             enableResumable: true,
+            skipPlayed: false,
             libraryManager.Object,
             userDataManager.Object,
             out var nextMidway,
@@ -185,6 +186,7 @@ public sealed class SeriesShuffleManagerTests : IDisposable
             seriesId,
             null,
             enableResumable: true,
+            skipPlayed: false,
             libraryManager.Object,
             userDataManager.Object,
             out var nextAfterCompletion,
@@ -413,6 +415,85 @@ public sealed class SeriesShuffleManagerTests : IDisposable
             sortBy: ItemSortBy.SortName);
 
         Assert.False(shuffleManager.IsShuffleActive(userId, seriesId));
+    }
+
+    [Fact]
+    public void FilterPlayed_RemovesPlayedKeepsInProgressStartItemAndMusic()
+    {
+        var user = new User("test", "default", "default") { Id = Guid.NewGuid() };
+        var episodes = CreateEpisodes(Guid.NewGuid(), Guid.NewGuid(), 5);
+        var song = new MediaBrowser.Controller.Entities.Audio.Audio { Id = Guid.NewGuid(), Name = "Song" };
+        var items = new List<BaseItem>(episodes) { song };
+
+        var data = new Dictionary<Guid, UserItemData>
+        {
+            [episodes[0].Id] = new UserItemData { Key = "0", Played = true },
+            [episodes[1].Id] = new UserItemData { Key = "1", Played = true, PlaybackPositionTicks = 100 },
+            [episodes[2].Id] = new UserItemData { Key = "2", Played = false, PlaybackPositionTicks = 100 },
+            [episodes[3].Id] = new UserItemData { Key = "3", Played = true },
+            [episodes[4].Id] = new UserItemData { Key = "4", Played = false },
+            [song.Id] = new UserItemData { Key = "s", Played = true },
+        };
+        var userDataManager = new Mock<IUserDataManager>();
+        userDataManager
+            .Setup(m => m.GetUserData(user, It.IsAny<BaseItem>()))
+            .Returns((User _, BaseItem i) => data[i.Id]);
+
+        var result = ShuffleSkipPlayed.FilterPlayed(items, user, userDataManager.Object, episodes[3].Id);
+
+        Assert.Equal(
+            new List<Guid> { episodes[1].Id, episodes[2].Id, episodes[3].Id, episodes[4].Id, song.Id },
+            result.Select(i => i.Id).ToList());
+    }
+
+    [Fact]
+    public void FilterPlayed_ReturnsAllItemsWhenEverythingIsPlayed()
+    {
+        var user = new User("test", "default", "default") { Id = Guid.NewGuid() };
+        var episodes = CreateEpisodes(Guid.NewGuid(), Guid.NewGuid(), 3);
+        var userDataManager = new Mock<IUserDataManager>();
+        userDataManager
+            .Setup(m => m.GetUserData(user, It.IsAny<BaseItem>()))
+            .Returns(new UserItemData { Key = "x", Played = true });
+
+        var result = ShuffleSkipPlayed.FilterPlayed(episodes, user, userDataManager.Object, episodes[1].Id);
+
+        Assert.Equal(episodes.Select(i => i.Id).ToList(), result.Select(i => i.Id).ToList());
+    }
+
+    [Fact]
+    public void TryGetNextUpEpisode_SkipsPlayedAndFallsBackWhenAllPlayed()
+    {
+        var userId = Guid.NewGuid();
+        var seriesId = Guid.NewGuid();
+        var episodes = CreateEpisodes(seriesId, Guid.NewGuid(), 4);
+        var manager = new SeriesShuffleManager();
+        manager.RecordSeriesShuffle(
+            userId,
+            seriesId,
+            "series-key-skip",
+            null,
+            new List<Guid> { episodes[3].Id, episodes[1].Id, episodes[0].Id, episodes[2].Id });
+
+        var user = new User("test", "default", "default") { Id = userId };
+        var libraryManager = new Mock<ILibraryManager>();
+        foreach (var ep in episodes)
+        {
+            libraryManager.Setup(m => m.GetItemById<BaseItem>(ep.Id, user)).Returns(ep);
+        }
+
+        var played = new HashSet<Guid> { episodes[3].Id, episodes[1].Id };
+        var userDataManager = new Mock<IUserDataManager>();
+        userDataManager
+            .Setup(m => m.GetUserData(user, It.IsAny<BaseItem>()))
+            .Returns((User _, BaseItem i) => new UserItemData { Key = "k", Played = played.Contains(i.Id) });
+
+        Assert.True(manager.TryGetNextUpEpisode(user, "series-key-skip", seriesId, null, true, true, libraryManager.Object, userDataManager.Object, out var next, out _));
+        Assert.Equal(episodes[0].Id, next!.Id);
+
+        played.UnionWith(episodes.Select(e => e.Id));
+        Assert.True(manager.TryGetNextUpEpisode(user, "series-key-skip", seriesId, null, true, true, libraryManager.Object, userDataManager.Object, out var fallback, out _));
+        Assert.Equal(episodes[3].Id, fallback!.Id);
     }
 
     private static List<BaseItem> CreateEpisodes(Guid seriesId, Guid seasonId, int count)

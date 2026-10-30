@@ -11,6 +11,7 @@ using Jellyfin.Data.Enums;
 using Jellyfin.Database.Implementations.Enums;
 using Jellyfin.Extensions;
 using MediaBrowser.Common.Extensions;
+using MediaBrowser.Controller.Configuration;
 using MediaBrowser.Controller.Dto;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
@@ -47,6 +48,7 @@ public class ItemsController : BaseJellyfinApiController
     private readonly IUserDataManager _userDataRepository;
     private readonly ISearchManager _searchManager;
     private readonly ISeriesShuffleManager? _seriesShuffleManager;
+    private readonly IServerConfigurationManager? _serverConfigurationManager;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="ItemsController"/> class.
@@ -60,6 +62,7 @@ public class ItemsController : BaseJellyfinApiController
     /// <param name="userDataRepository">Instance of the <see cref="IUserDataManager"/> interface.</param>
     /// <param name="searchManager">Instance of the <see cref="ISearchManager"/> interface.</param>
     /// <param name="seriesShuffleManager">Optional instance of the <see cref="ISeriesShuffleManager"/> interface.</param>
+    /// <param name="serverConfigurationManager">Optional instance of the <see cref="IServerConfigurationManager"/> interface.</param>
     public ItemsController(
         IUserManager userManager,
         ILibraryManager libraryManager,
@@ -69,7 +72,8 @@ public class ItemsController : BaseJellyfinApiController
         ISessionManager sessionManager,
         IUserDataManager userDataRepository,
         ISearchManager searchManager,
-        ISeriesShuffleManager? seriesShuffleManager = null)
+        ISeriesShuffleManager? seriesShuffleManager = null,
+        IServerConfigurationManager? serverConfigurationManager = null)
     {
         _userManager = userManager;
         _libraryManager = libraryManager;
@@ -80,6 +84,7 @@ public class ItemsController : BaseJellyfinApiController
         _userDataRepository = userDataRepository;
         _searchManager = searchManager;
         _seriesShuffleManager = seriesShuffleManager;
+        _serverConfigurationManager = serverConfigurationManager;
     }
 
     /// <summary>
@@ -494,6 +499,18 @@ public class ItemsController : BaseJellyfinApiController
 
         query.ApplyFilters(filters);
 
+        // Shuffled queues leave out played items, except for music-like content.
+        var skipPlayedApplied = false;
+        if (user is not null
+            && query.IsPlayed is null
+            && sortBy.Contains(ItemSortBy.Random)
+            && (_serverConfigurationManager?.Configuration.ShuffleSkipPlayed ?? true)
+            && !IsSkipPlayedExcluded(folder, collectionType, includeItemTypes, mediaTypes, artistIds, albumArtistIds, contributingArtistIds, albumIds))
+        {
+            query.IsPlayed = false;
+            skipPlayedApplied = true;
+        }
+
         // Filter by Series Status
         if (seriesStatus.Length != 0)
         {
@@ -599,6 +616,13 @@ public class ItemsController : BaseJellyfinApiController
         {
             // folder.GetItems applies user-access filtering via the InternalItemsQuery's User.
             result = folder.GetItems(query);
+            if (skipPlayedApplied && result.Items.Count == 0 && (startIndex ?? 0) == 0)
+            {
+                // Everything is played: fall back to shuffling all items.
+                query.IsPlayed = null;
+                result = folder.GetItems(query);
+            }
+
             if (searchResultScores is not null && searchResultScores.Count > 0)
             {
                 var orderedItems = result.Items
@@ -1202,4 +1226,38 @@ public class ItemsController : BaseJellyfinApiController
         [FromRoute, Required] Guid itemId,
         [FromBody, Required] UpdateUserItemDataDto userDataDto)
         => UpdateItemUserData(userId, itemId, userDataDto);
+
+    private bool IsSkipPlayedExcluded(
+        BaseItem item,
+        CollectionType? collectionType,
+        BaseItemKind[] includeItemTypes,
+        MediaType[] mediaTypes,
+        Guid[] artistIds,
+        Guid[] albumArtistIds,
+        Guid[] contributingArtistIds,
+        Guid[] albumIds)
+    {
+        if (artistIds.Length > 0 || albumArtistIds.Length > 0 || contributingArtistIds.Length > 0 || albumIds.Length > 0)
+        {
+            return true;
+        }
+
+        if (mediaTypes.Contains(MediaType.Audio) || mediaTypes.Contains(MediaType.Book))
+        {
+            return true;
+        }
+
+        if (includeItemTypes.Any(ShuffleSkipPlayed.IsExcludedKind))
+        {
+            return true;
+        }
+
+        if (ShuffleSkipPlayed.IsExcludedCollectionType(collectionType) || ShuffleSkipPlayed.IsExcludedItem(item))
+        {
+            return true;
+        }
+
+        return item is not UserRootFolder
+            && ShuffleSkipPlayed.IsExcludedCollectionType(_libraryManager.GetInheritedContentType(item) ?? _libraryManager.GetContentType(item));
+    }
 }

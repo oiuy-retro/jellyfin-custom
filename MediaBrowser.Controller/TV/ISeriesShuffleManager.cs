@@ -121,6 +121,7 @@ public interface ISeriesShuffleManager
     /// <param name="seriesId">Optional series identifier.</param>
     /// <param name="parentFolders">Optional parent library folders filter.</param>
     /// <param name="enableResumable">Whether resumable (in-progress) episodes should be included in Next Up.</param>
+    /// <param name="skipPlayed">Whether played episodes are skipped. If all are played, the first valid episode is returned.</param>
     /// <param name="libraryManager">The library manager.</param>
     /// <param name="userDataManager">The user data manager.</param>
     /// <param name="nextEpisode">When returning <c>true</c>, the resolved next shuffled episode, or <c>null</c> if suppressed because it is resumable and <paramref name="enableResumable"/> is <c>false</c>.</param>
@@ -132,6 +133,7 @@ public interface ISeriesShuffleManager
         Guid? seriesId,
         IReadOnlyList<BaseItem>? parentFolders,
         bool enableResumable,
+        bool skipPlayed,
         ILibraryManager libraryManager,
         IUserDataManager userDataManager,
         out Episode? nextEpisode,

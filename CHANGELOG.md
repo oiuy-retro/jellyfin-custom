@@ -10,6 +10,15 @@ All custom releases keep upstream's server version **12.3.0** and are built from
 ## [Unreleased] - 2026-10-22
 
 ### Added
+- Server setting `ShuffleSkipPlayed` (`ServerConfiguration`, default `true`). When on, shuffled
+  queues from `GET /Shows/{seriesId}/Episodes?sortBy=Random` and `GET /Items?sortBy=Random` leave
+  out played items. Unplayed in-progress items and the `startItemId` item stay. If every item is
+  played, all items are shuffled. Music, music videos, audiobooks, books, audio playlists and items
+  in Music, Music Videos or Books libraries are never filtered.
+- `ShuffleSkipPlayed` helper (`MediaBrowser.Controller/TV/ShuffleSkipPlayed.cs`).
+- Resume from Continue Watching / Next Up with active shuffle skips played episodes in the rest of
+  the saved queue; Next Up for a shuffled series returns the first unplayed episode in the queue.
+- Unit tests for skip-played filtering, the all-played fallback, music exclusion, and Next Up.
 - `ISeriesShuffleManager` (`MediaBrowser.Controller/TV/ISeriesShuffleManager.cs`) and
   `SeriesShuffleManager` (`Emby.Server.Implementations/TV/SeriesShuffleManager.cs`) to persist
   per-`(userId, seriesId)` shuffle state and shuffled episode queues to

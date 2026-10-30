@@ -6,8 +6,10 @@ using Jellyfin.Api.Extensions;
 using Jellyfin.Api.Helpers;
 using Jellyfin.Api.ModelBinders;
 using Jellyfin.Data.Enums;
+using Jellyfin.Database.Implementations.Entities;
 using Jellyfin.Database.Implementations.Enums;
 using Jellyfin.Extensions;
+using MediaBrowser.Controller.Configuration;
 using MediaBrowser.Controller.Dto;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.TV;
@@ -35,6 +37,8 @@ public class TvShowsController : BaseJellyfinApiController
     private readonly IDtoService _dtoService;
     private readonly ITVSeriesManager _tvSeriesManager;
     private readonly ISeriesShuffleManager? _seriesShuffleManager;
+    private readonly IUserDataManager? _userDataManager;
+    private readonly IServerConfigurationManager? _serverConfigurationManager;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="TvShowsController"/> class.
@@ -44,18 +48,24 @@ public class TvShowsController : BaseJellyfinApiController
     /// <param name="dtoService">Instance of the <see cref="IDtoService"/> interface.</param>
     /// <param name="tvSeriesManager">Instance of the <see cref="ITVSeriesManager"/> interface.</param>
     /// <param name="seriesShuffleManager">Optional instance of the <see cref="ISeriesShuffleManager"/> interface.</param>
+    /// <param name="userDataManager">Optional instance of the <see cref="IUserDataManager"/> interface.</param>
+    /// <param name="serverConfigurationManager">Optional instance of the <see cref="IServerConfigurationManager"/> interface.</param>
     public TvShowsController(
         IUserManager userManager,
         ILibraryManager libraryManager,
         IDtoService dtoService,
         ITVSeriesManager tvSeriesManager,
-        ISeriesShuffleManager? seriesShuffleManager = null)
+        ISeriesShuffleManager? seriesShuffleManager = null,
+        IUserDataManager? userDataManager = null,
+        IServerConfigurationManager? serverConfigurationManager = null)
     {
         _userManager = userManager;
         _libraryManager = libraryManager;
         _dtoService = dtoService;
         _tvSeriesManager = tvSeriesManager;
         _seriesShuffleManager = seriesShuffleManager;
+        _userDataManager = userDataManager;
+        _serverConfigurationManager = serverConfigurationManager;
     }
 
     /// <summary>
@@ -304,6 +314,8 @@ public class TvShowsController : BaseJellyfinApiController
                 episodes.Shuffle();
             }
 
+            episodes = SkipPlayedForShuffle(episodes, user, startItemId.HasValue ? ResolvePrimaryEpisodeId(startItemId.Value) : Guid.Empty);
+
             if (!adjacentTo.IsNullOrEmpty())
             {
                 episodes = UserViewBuilder.FilterForAdjacency(episodes, adjacentTo.Value).ToList();
@@ -336,6 +348,7 @@ public class TvShowsController : BaseJellyfinApiController
                 {
                     var startId = ResolvePrimaryEpisodeId(startItemId.Value);
                     episodes = _seriesShuffleManager.OrderEpisodesForResume(user.Id, seriesId, episodes, startId).ToList();
+                    episodes = SkipPlayedForShuffle(episodes, user, startId);
                 }
                 else
                 {
@@ -476,5 +489,18 @@ public class TvShowsController : BaseJellyfinApiController
         }
 
         return items;
+    }
+
+    private List<BaseItem> SkipPlayedForShuffle(List<BaseItem> episodes, User? user, Guid keepId)
+    {
+        if (user is null
+            || _userDataManager is null
+            || !(_serverConfigurationManager?.Configuration.ShuffleSkipPlayed ?? true)
+            || episodes.Count == 0)
+        {
+            return episodes;
+        }
+
+        return ShuffleSkipPlayed.FilterPlayed(episodes, user, _userDataManager, keepId).ToList();
     }
 }

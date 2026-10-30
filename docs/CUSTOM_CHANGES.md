@@ -17,6 +17,8 @@ All changes are on the branch `fix/shuffle-resume`, based on upstream tag `v12.3
 | `Emby.Server.Implementations/Session/SessionManager.cs` | Injects `ISeriesShuffleManager` and hooks `OnPlaybackStart`, `OnPlaybackProgress`, and `OnPlaybackStopped` to activate shuffle when `PlaybackOrder.Shuffle` is reported, clear shuffle only when toggled from `Shuffle` to `Default` on the same item in an active session, and rotate completed episodes to the back of the shuffle queue on stop. |
 | `Emby.Server.Implementations/TV/TVSeriesManager.cs` | Injects `ISeriesShuffleManager` and updates `GetNextUp` / `GetNextUpBatched` so Next Up returns the next episode from the active shuffled queue. |
 | `tests/Jellyfin.Server.Implementations.Tests/TV/SeriesShuffleManagerTests.cs` | **New file.** Unit tests for `SeriesShuffleManager` and `TvShowsController.GetEpisodes`. |
+| `MediaBrowser.Controller/TV/ShuffleSkipPlayed.cs` | **New file.** Skip-played filtering and music exclusion rules for shuffled queues. |
+| `MediaBrowser.Model/Configuration/ServerConfiguration.cs` | Adds `ShuffleSkipPlayed` (default `true`). |
 | `global.json` | Changes `sdk.version` from `"10.0.0"` to `"10.0.100"` (`rollForward: "latestMinor"`) so `.NET 10.0.4xx` SDK hosts validate `global.json` without error. |
 
 ## How the resume flow works
@@ -39,3 +41,13 @@ All changes are on the branch `fix/shuffle-resume`, based on upstream tag `v12.3
    - Clicking an episode card on the home screen sends `GET /Shows/{seriesId}/Episodes?startItemId={episodeId}` with `sortBy = null`.
    - `TvShowsController.GetEpisodes` sees `startItemId.HasValue`, `!sortBy.HasValue`, and `_seriesShuffleManager.IsShuffleActive(user.Id, seriesId) == true`.
    - It calls `_seriesShuffleManager.OrderEpisodesForResume(user.Id, seriesId, episodes, startId)`, which reconciles the episode list, rotates `EpisodeIds` so `startId` is at index `0` (moving episodes that preceded `startId` to the end of the queue), saves the updated order, and returns the episodes in that order.
+
+## Skip played items when shuffling
+
+Setting: `ServerConfiguration.ShuffleSkipPlayed` (default `true`), stored in `system.xml`.
+
+- `MediaBrowser.Controller/TV/ShuffleSkipPlayed.cs`: `FilterPlayed` removes items whose user data has `Played == true` and `PlaybackPositionTicks == 0`. The `keepId` item and music-like items always stay. If nothing other than `keepId` would remain, the original list is returned. `IsExcludedItem`, `IsExcludedKind` and `IsExcludedCollectionType` define the music exclusion: `Audio` (including `AudioBook`), `MusicAlbum`, `MusicArtist`, `MusicGenre`, `MusicVideo`, `Book`, playlists with media type Audio, items with media type Audio, and the `music`, `musicvideos` and `books` collection types.
+- `TvShowsController.GetEpisodes`: on `sortBy=Random`, filters after shuffling and before saving the queue. On resume with active shuffle, filters after `OrderEpisodesForResume` with the resumed episode as `keepId`. The saved queue is not trimmed.
+- `ItemsController.GetItems`: on `sortBy=Random`, sets `query.IsPlayed = false` when the user is known, the request has no explicit played filter, and the request is not music-like (parent item or library type, `includeItemTypes`, `mediaTypes`, artist or album filters). If the first page comes back empty, the query is run again without the filter.
+- `ISeriesShuffleManager.TryGetNextUpEpisode` takes `skipPlayed`. `TVSeriesManager` passes the setting. Played episodes without a saved position are skipped; if all are played, the first valid episode in the queue is returned.
+

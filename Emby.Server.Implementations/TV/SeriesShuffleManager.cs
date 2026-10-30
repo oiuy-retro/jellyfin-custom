@@ -420,6 +420,7 @@ public sealed class SeriesShuffleManager : ISeriesShuffleManager
         Guid? seriesId,
         IReadOnlyList<BaseItem>? parentFolders,
         bool enableResumable,
+        bool skipPlayed,
         ILibraryManager libraryManager,
         IUserDataManager userDataManager,
         out Episode? nextEpisode,
@@ -465,6 +466,7 @@ public sealed class SeriesShuffleManager : ISeriesShuffleManager
             lastWatchedDate = matchedEntry.LastUpdatedUtc;
         }
 
+        Episode? firstPlayedFallback = null;
         foreach (var candidateId in episodeIdsSnapshot)
         {
             if (libraryManager.GetItemById<BaseItem>(candidateId, user) is not Episode candidateEpisode || (!string.IsNullOrEmpty(candidateEpisode.Path) && candidateEpisode.IsMissingEpisode))
@@ -489,6 +491,13 @@ public sealed class SeriesShuffleManager : ISeriesShuffleManager
                 }
             }
 
+            if (skipPlayed && !isResumable && userDataManager.GetUserData(user, candidateEpisode)?.Played == true)
+            {
+                // Played: keep looking, but remember the first one for the all-played fallback.
+                firstPlayedFallback ??= candidateEpisode;
+                continue;
+            }
+
             if (isResumable && !enableResumable)
             {
                 nextEpisode = null;
@@ -496,6 +505,13 @@ public sealed class SeriesShuffleManager : ISeriesShuffleManager
             }
 
             nextEpisode = candidateEpisode;
+            return true;
+        }
+
+        if (firstPlayedFallback is not null)
+        {
+            // Every remaining episode is played: fall back to the first one in the queue.
+            nextEpisode = firstPlayedFallback;
             return true;
         }
 

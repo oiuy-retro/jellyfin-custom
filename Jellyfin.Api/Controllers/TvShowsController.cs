@@ -6,8 +6,10 @@ using Jellyfin.Api.Extensions;
 using Jellyfin.Api.Helpers;
 using Jellyfin.Api.ModelBinders;
 using Jellyfin.Data.Enums;
+using Jellyfin.Database.Implementations.Entities;
 using Jellyfin.Database.Implementations.Enums;
 using Jellyfin.Extensions;
+using MediaBrowser.Controller.Configuration;
 using MediaBrowser.Controller.Dto;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.TV;
@@ -34,6 +36,9 @@ public class TvShowsController : BaseJellyfinApiController
     private readonly ILibraryManager _libraryManager;
     private readonly IDtoService _dtoService;
     private readonly ITVSeriesManager _tvSeriesManager;
+    private readonly ISeriesShuffleManager? _seriesShuffleManager;
+    private readonly IUserDataManager? _userDataManager;
+    private readonly IServerConfigurationManager? _serverConfigurationManager;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="TvShowsController"/> class.
@@ -42,16 +47,25 @@ public class TvShowsController : BaseJellyfinApiController
     /// <param name="libraryManager">Instance of the <see cref="ILibraryManager"/> interface.</param>
     /// <param name="dtoService">Instance of the <see cref="IDtoService"/> interface.</param>
     /// <param name="tvSeriesManager">Instance of the <see cref="ITVSeriesManager"/> interface.</param>
+    /// <param name="seriesShuffleManager">Optional instance of the <see cref="ISeriesShuffleManager"/> interface.</param>
+    /// <param name="userDataManager">Optional instance of the <see cref="IUserDataManager"/> interface.</param>
+    /// <param name="serverConfigurationManager">Optional instance of the <see cref="IServerConfigurationManager"/> interface.</param>
     public TvShowsController(
         IUserManager userManager,
         ILibraryManager libraryManager,
         IDtoService dtoService,
-        ITVSeriesManager tvSeriesManager)
+        ITVSeriesManager tvSeriesManager,
+        ISeriesShuffleManager? seriesShuffleManager = null,
+        IUserDataManager? userDataManager = null,
+        IServerConfigurationManager? serverConfigurationManager = null)
     {
         _userManager = userManager;
         _libraryManager = libraryManager;
         _dtoService = dtoService;
         _tvSeriesManager = tvSeriesManager;
+        _seriesShuffleManager = seriesShuffleManager;
+        _userDataManager = userDataManager;
+        _serverConfigurationManager = serverConfigurationManager;
     }
 
     /// <summary>
@@ -225,6 +239,8 @@ public class TvShowsController : BaseJellyfinApiController
             : _userManager.GetUserById(userId.Value);
 
         List<BaseItem> episodes;
+        Guid? resolvedSeasonId = null;
+        string? seriesPresentationUniqueKey = null;
 
         var dtoOptions = new DtoOptions { Fields = fields }
             .AddAdditionalDtoOptions(enableImages, enableUserData, imageTypeLimit, enableImageTypes);
@@ -238,6 +254,9 @@ public class TvShowsController : BaseJellyfinApiController
                 return NotFound("No season exists with Id " + seasonId);
             }
 
+            resolvedSeasonId = seasonItem.Id;
+            seriesPresentationUniqueKey = seasonItem.SeriesPresentationUniqueKey
+                ?? _libraryManager.GetItemById<Series>(seriesId)?.GetPresentationUniqueKey();
             episodes = seasonItem.GetEpisodes(user, dtoOptions, shouldIncludeMissingEpisodes);
         }
         else if (season.HasValue) // Season number was supplied. Get episodes by season number
@@ -248,10 +267,12 @@ public class TvShowsController : BaseJellyfinApiController
                 return NotFound("Series not found");
             }
 
+            seriesPresentationUniqueKey = series.GetPresentationUniqueKey();
             var seasonItem = series
                 .GetSeasons(user, dtoOptions)
                 .FirstOrDefault(i => i.IndexNumber == season.Value);
 
+            resolvedSeasonId = seasonItem?.Id;
             episodes = seasonItem is null ?
                 new List<BaseItem>()
                 : ((Season)seasonItem).GetEpisodes(user, dtoOptions, shouldIncludeMissingEpisodes);
@@ -263,6 +284,7 @@ public class TvShowsController : BaseJellyfinApiController
                 return NotFound("Series not found");
             }
 
+            seriesPresentationUniqueKey = series.GetPresentationUniqueKey();
             episodes = series.GetEpisodes(user, dtoOptions, shouldIncludeMissingEpisodes).ToList();
         }
 
@@ -275,29 +297,77 @@ public class TvShowsController : BaseJellyfinApiController
                 .ToList();
         }
 
-        if (startItemId.HasValue)
-        {
-            // The start item may be an alternate version, which is not part of the episode listing; start from its primary episode instead.
-            var startId = startItemId.Value;
-            if (_libraryManager.GetItemById<Video>(startId)?.PrimaryVersionId is { } primaryVersionId)
-            {
-                startId = primaryVersionId;
-            }
-
-            episodes = episodes
-                .SkipWhile(i => !startId.Equals(i.Id))
-                .ToList();
-        }
-
-        // This must be the last filter
-        if (!adjacentTo.IsNullOrEmpty())
-        {
-            episodes = UserViewBuilder.FilterForAdjacency(episodes, adjacentTo.Value).ToList();
-        }
+        var isPlaybackQuery = fields is not null && fields.Contains(ItemFields.MediaSources);
 
         if (sortBy == ItemSortBy.Random)
         {
-            episodes.Shuffle();
+            if (startItemId.HasValue)
+            {
+                var startId = ResolvePrimaryEpisodeId(startItemId.Value);
+                var startEpisode = episodes.FirstOrDefault(i => startId.Equals(i.Id));
+                var remaining = episodes.Where(i => !startId.Equals(i.Id)).ToList();
+                remaining.Shuffle();
+                episodes = startEpisode is not null ? [startEpisode, .. remaining] : remaining;
+            }
+            else
+            {
+                episodes.Shuffle();
+            }
+
+            episodes = SkipPlayedForShuffle(episodes, user, startItemId.HasValue ? ResolvePrimaryEpisodeId(startItemId.Value) : Guid.Empty);
+
+            if (!adjacentTo.IsNullOrEmpty())
+            {
+                episodes = UserViewBuilder.FilterForAdjacency(episodes, adjacentTo.Value).ToList();
+            }
+
+            if (user is not null && _seriesShuffleManager is not null && episodes.Count > 0)
+            {
+                _seriesShuffleManager.RecordSeriesShuffle(
+                    user.Id,
+                    seriesId,
+                    seriesPresentationUniqueKey,
+                    resolvedSeasonId,
+                    episodes.Select(i => i.Id).ToList());
+            }
+        }
+        else if (sortBy.HasValue)
+        {
+            if (user is not null && (isPlaybackQuery || (!startItemId.HasValue && adjacentTo.IsNullOrEmpty())))
+            {
+                _seriesShuffleManager?.ClearSeriesShuffle(user.Id, seriesId);
+            }
+
+            episodes = ApplySequentialFilters(episodes, startItemId, adjacentTo);
+        }
+        else if (startItemId.HasValue || !adjacentTo.IsNullOrEmpty())
+        {
+            if (user is not null && _seriesShuffleManager is not null && _seriesShuffleManager.IsShuffleActive(user.Id, seriesId))
+            {
+                if (startItemId.HasValue)
+                {
+                    var startId = ResolvePrimaryEpisodeId(startItemId.Value);
+                    episodes = _seriesShuffleManager.OrderEpisodesForResume(user.Id, seriesId, episodes, startId).ToList();
+                    episodes = SkipPlayedForShuffle(episodes, user, startId);
+                }
+                else
+                {
+                    episodes = _seriesShuffleManager.OrderEpisodesForAdjacency(user.Id, seriesId, episodes).ToList();
+                }
+
+                if (!adjacentTo.IsNullOrEmpty())
+                {
+                    episodes = UserViewBuilder.FilterForAdjacency(episodes, adjacentTo.Value).ToList();
+                }
+            }
+            else
+            {
+                episodes = ApplySequentialFilters(episodes, startItemId, adjacentTo);
+            }
+        }
+        else if (user is not null && isPlaybackQuery)
+        {
+            _seriesShuffleManager?.ClearSeriesShuffle(user.Id, seriesId);
         }
 
         var returnItems = episodes;
@@ -369,6 +439,34 @@ public class TvShowsController : BaseJellyfinApiController
         return new QueryResult<BaseItemDto>(returnItems);
     }
 
+    private Guid ResolvePrimaryEpisodeId(Guid episodeId)
+    {
+        if (_libraryManager.GetItemById<Video>(episodeId)?.PrimaryVersionId is { } primaryVersionId && !primaryVersionId.IsEmpty())
+        {
+            return primaryVersionId;
+        }
+
+        return episodeId;
+    }
+
+    private List<BaseItem> ApplySequentialFilters(List<BaseItem> episodes, Guid? startItemId, Guid? adjacentTo)
+    {
+        if (startItemId.HasValue)
+        {
+            var startId = ResolvePrimaryEpisodeId(startItemId.Value);
+            episodes = episodes
+                .SkipWhile(i => !startId.Equals(i.Id))
+                .ToList();
+        }
+
+        if (!adjacentTo.IsNullOrEmpty())
+        {
+            episodes = UserViewBuilder.FilterForAdjacency(episodes, adjacentTo.Value).ToList();
+        }
+
+        return episodes;
+    }
+
     /// <summary>
     /// Applies the paging.
     /// </summary>
@@ -391,5 +489,18 @@ public class TvShowsController : BaseJellyfinApiController
         }
 
         return items;
+    }
+
+    private List<BaseItem> SkipPlayedForShuffle(List<BaseItem> episodes, User? user, Guid keepId)
+    {
+        if (user is null
+            || _userDataManager is null
+            || !(_serverConfigurationManager?.Configuration.ShuffleSkipPlayed ?? true)
+            || episodes.Count == 0)
+        {
+            return episodes;
+        }
+
+        return ShuffleSkipPlayed.FilterPlayed(episodes, user, _userDataManager, keepId).ToList();
     }
 }

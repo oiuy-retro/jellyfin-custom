@@ -1,181 +1,148 @@
-<h1 align="center">Jellyfin</h1>
-<h3 align="center">The Free Software Media System</h3>
+# Jellyfin — Custom Build
 
----
+A personal build of the Jellyfin server that remembers when a TV show is being watched on shuffle and keeps the episode queue randomized when you stop playback, go to the main menu, and resume from Continue Watching or Next Up.
 
-<p align="center">
-<img alt="Logo Banner" src="https://raw.githubusercontent.com/jellyfin/jellyfin-ux/master/branding/SVG/banner-logo-solid.svg?sanitize=true"/>
-<br/>
-<br/>
-<a href="https://github.com/jellyfin/jellyfin"><img alt="GPL 2.0 License" src="https://img.shields.io/github/license/jellyfin/jellyfin.svg"/></a>
-<a href="https://github.com/jellyfin/jellyfin/releases"><img alt="Current Release" src="https://img.shields.io/github/release/jellyfin/jellyfin.svg"/></a>
-<a href="https://translate.jellyfin.org/projects/jellyfin/jellyfin-core/?utm_source=widget"><img alt="Translation Status" src="https://translate.jellyfin.org/widgets/jellyfin/-/jellyfin-core/svg-badge.svg"/></a>
-<a href="https://hub.docker.com/r/jellyfin/jellyfin"><img alt="Docker Pull Count" src="https://img.shields.io/docker/pulls/jellyfin/jellyfin.svg"/></a>
-<br/>
-<a href="https://opencollective.com/jellyfin"><img alt="Donate" src="https://img.shields.io/opencollective/all/jellyfin.svg?label=backers"/></a>
-<a href="https://features.jellyfin.org"><img alt="Submit Feature Requests" src="https://img.shields.io/badge/fider-vote%20on%20features-success.svg"/></a>
-<a href="https://matrix.to/#/#jellyfinorg:matrix.org"><img alt="Chat on Matrix" src="https://img.shields.io/matrix/jellyfinorg:matrix.org.svg?logo=matrix"/></a>
-<a href="https://github.com/jellyfin/jellyfin/releases.atom"><img alt="Release RSS Feed" src="https://img.shields.io/badge/rss-releases-ffa500?logo=rss" /></a>
-<a href="https://github.com/jellyfin/jellyfin/commits/master.atom"><img alt="Master Commits RSS Feed" src="https://img.shields.io/badge/rss-commits-ffa500?logo=rss" /></a>
-</p>
+> **This is an unofficial custom build.** It is based on
+> [Jellyfin](https://github.com/jellyfin/jellyfin) by the Jellyfin contributors, and is
+> distributed under the same [GNU General Public License v2.0](LICENSE). It is not affiliated
+> with or supported by the upstream project — please don't report problems with this build to them.
+>
+> For what Jellyfin itself is and does, see [docs/ABOUT_JELLYFIN.md](docs/ABOUT_JELLYFIN.md).
 
----
+- Based on upstream `release-12.z` at commit `06de749d43` (the `v12.3` tag, 2026-10-22).
+- Server version: **12.3.0** (assembly and file version unchanged from upstream `v12.3`).
+- Custom changes are on the `fix/shuffle-resume` branch.
+- See [CHANGELOG.md](CHANGELOG.md) for the history of the custom releases.
 
-Jellyfin is a Free Software Media System that puts you in control of managing and streaming your media. It is an alternative to the proprietary Emby and Plex, to provide media from a dedicated server to end-user devices via multiple apps. Jellyfin is descended from Emby's 3.5.2 release and ported to the .NET platform to enable full cross-platform support.
+## What's different from upstream
 
-There are no strings attached, no premium licenses or features, and no hidden agendas: just a team that wants to build something better and work together to achieve it. We welcome anyone who is interested in joining us in our quest!
+### 1. Resuming a shuffled show from the main menu keeps playing randomly
 
-For further details, please see [our documentation page](https://jellyfin.org/docs/). To receive the latest updates, get help with Jellyfin, and join the community, please visit [one of our communication channels](https://jellyfin.org/docs/general/getting-help). For more information about the project, please see our [about page](https://jellyfin.org/docs/general/about).
+In upstream Jellyfin, clicking **Shuffle** on a TV show (`GET /Shows/{seriesId}/Episodes?sortBy=Random`) creates a temporary shuffled queue in the client. If you stop an episode partway through, go to the main menu, and resume that episode from **Continue Watching** or **Next Up**, the client asks the server for episodes starting at that episode (`GET /Shows/{seriesId}/Episodes?startItemId={episodeId}`) with no `sortBy` parameter. Upstream then returns the remaining episodes in sequential season-and-episode order (`S02E05`, `S02E06`, `S02E07`, ...).
 
-<strong>Want to get started?</strong><br/>
-Check out our <a href="https://jellyfin.org/downloads">downloads page</a> or our <a href="https://jellyfin.org/docs/general/installation/">installation guide</a>, then see our <a href="https://jellyfin.org/docs/general/quick-start">quick start guide</a>. You can also <a href="https://jellyfin.org/docs/general/installation/source">build from source</a>.<br/>
+This build fixes that on the server so it works across all Jellyfin clients (Jellyfin Web, Jellyfin Media Player, Android TV, Android, Roku, Swiftfin, and others):
 
-<strong>Something not working right?</strong><br/>
-Open an <a href="https://jellyfin.org/docs/general/contributing/issues">Issue</a> on GitHub.<br/>
+- **Tracks per-user, per-series shuffle state:** When a user shuffles a series or season (`GET /Shows/{seriesId}/Episodes?sortBy=Random` or `GET /Items?parentId={seriesId}&sortBy=Random`), `SeriesShuffleManager` records that the series is in shuffle mode for that user and saves the shuffled episode ID sequence.
+- **Resumes the exact episode first, followed by the shuffled queue:** When a client resumes an episode from Continue Watching or Next Up (`GET /Shows/{seriesId}/Episodes?startItemId={episodeId}` without `sortBy`), if shuffle is active for that user and series:
+  - The resumed episode is placed at index `0` (`episodes[0]`) so playback starts immediately at your saved timestamp.
+  - All other episodes in the series (or season, if a single season was shuffled) follow in the saved shuffled order after the resumed episode, wrapping around so earlier seasons and episodes are included rather than dropped by `SkipWhile`.
+  - Episodes that were earlier in the shuffle sequence are rotated to the end of the queue, so already-watched episodes from the current shuffle run do not repeat until the rest of the queue has played.
+- **Supports adjacency queries (`adjacentTo`):** Clients such as Swiftfin that query `GET /Shows/{seriesId}/Episodes?adjacentTo={episodeId}` for previous/next episodes receive neighbours from the saved shuffled order when shuffle is active.
+- **Survives server restarts:** Active shuffle states and episode queues are saved to `series-shuffle-state.json` inside Jellyfin's `DataPath`.
 
-<strong>Want to contribute?</strong><br/>
-Check out our <a href="https://jellyfin.org/contribute">contributing choose-your-own-adventure</a> to see where you can help, then see our <a href="https://jellyfin.org/docs/general/contributing/">contributing guide</a> and our <a href="https://jellyfin.org/docs/general/community-standards">community standards</a>.<br/>
+### 2. In-player shuffle toggle and playback tracking
 
-<strong>New idea or improvement?</strong><br/>
-Check out our <a href="https://features.jellyfin.org/?view=most-wanted">feature request hub</a>.<br/>
+- **Turning shuffle on inside the player:** If you start an episode normally and turn on shuffle using the player's own shuffle button (`PlaybackOrder.Shuffle` reported to `POST /Sessions/Playing` or `POST /Sessions/Playing/Progress`), the server activates shuffle mode for that user and series and generates a shuffled queue for the remaining episodes.
+- **Finishing an episode advances the shuffle queue:** When an episode finishes playing (`playedToCompletion == true` in `SessionManager.OnPlaybackStopped`), the server rotates that completed episode to the back of the saved shuffle queue so the next random episode is at the front.
+- **Stopping mid-episode keeps the episode at the front:** If you stop an episode before finishing it (`playedToCompletion == false`), that episode stays at index `0` of the saved shuffle queue until you finish it.
 
-<strong>Don't see Jellyfin in your language?</strong><br/>
-Check out our <a href="https://translate.jellyfin.org">Weblate instance</a> to help translate Jellyfin and its subprojects.<br/>
+### 3. Next Up on the main menu follows the shuffled order
 
-<a href="https://translate.jellyfin.org/engage/jellyfin/?utm_source=widget">
-<img src="https://translate.jellyfin.org/widgets/jellyfin/-/jellyfin-web/multi-auto.svg" alt="Detailed Translation Status"/>
-</a>
+- **Random Next Up (`GET /Shows/NextUp`):** In `TVSeriesManager`, when a series has shuffle active for a user, `GET /Shows/NextUp` returns the current front episode of the user's shuffled queue rather than the next sequential episode after the highest-numbered watched episode.
+- **No duplicate card when `enableResumable=false`:** If the front episode of the shuffle queue is currently in progress (`PlaybackPositionTicks > 0`) and the client requests `GET /Shows/NextUp?enableResumable=false` (to avoid duplicating the Continue Watching row), Next Up returns `null` for that series, matching upstream behavior.
+- **Works when rewatching completed shows:** Even if every episode of a series is already marked watched (`Played == true`, see section 5 for the fallback), or if shuffle happens to play the series finale (`S05E10`), the series remains in Next Up with the next episode from the shuffled queue.
 
----
+### 4. Switching a show back to sequential order
 
-## Jellyfin Server
+Shuffle mode stays active for a series until you explicitly switch back to sequential playback:
 
-This repository contains the code for Jellyfin's backend server. Note that this is only one of many projects under the Jellyfin GitHub [organization](https://github.com/jellyfin/) on GitHub. If you want to contribute, you can start by checking out our [documentation](https://jellyfin.org/docs/general/contributing/index.html) to see what to work on.
+- **Starting sequential series or season playback:** Calling `GET /Shows/{seriesId}/Episodes` with an explicit non-random sort order (such as `sortBy=SortName`, used by Android TV when clicking Play on a series or season) or calling `GET /Shows/{seriesId}/Episodes` for playback (`Fields` containing `MediaSources`) without `startItemId`, `adjacentTo`, or `sortBy=Random` clears the series' shuffle state for that user.
+- **Turning shuffle off in the player controls:** If a client is actively playing an episode with `PlaybackOrder.Shuffle` and switches to `PlaybackOrder.Default` on the same item during that session, the server clears the series' shuffle state for that user.
+- **Browsing does not clear shuffle:** Opening a series, season, or episode details page in the UI (`GET /Shows/{seriesId}/Episodes` without `MediaSources`) leaves the active shuffle state untouched and still lists episodes in normal season/episode order on the details page.
 
-## Server Development
+### 5. Shuffle skips items you have already played
 
-These instructions will help you get set up with a local development environment in order to contribute to this repository. Before you start, please be sure to completely read our [guidelines on development contributions](https://jellyfin.org/docs/general/contributing/development.html). Note that this project is supported on all major operating systems except FreeBSD, which is still incompatible.
+Controlled by the server setting `ShuffleSkipPlayed` in `system.xml` (`<ShuffleSkipPlayed>true</ShuffleSkipPlayed>`, default `true`). Set it to `false` to get upstream behavior.
 
-### Prerequisites
+- **Shuffle queues leave out played items:** `GET /Shows/{seriesId}/Episodes?sortBy=Random` and `GET /Items?sortBy=Random` (movies, collections, folders, video playlists, home videos) drop items marked played for the requesting user.
+- **In-progress items stay:** An item that is not marked played stays in the queue, including one with a saved position. In `/Shows/{seriesId}/Episodes`, an item marked played that has a saved position (a rewatch in progress) also stays.
+- **The episode you start or resume always stays:** With `startItemId`, that episode stays at index `0` even if it is marked played.
+- **Resuming a shuffled show:** When resuming from Continue Watching or Next Up with shuffle active, played episodes are removed from the rest of the saved queue. The saved queue itself is not changed, so marking an episode unplayed puts it back.
+- **Next Up:** For a shuffled series, Next Up shows the first episode in the shuffled queue that is not played.
+- **Everything played:** If every item is played, the whole list is shuffled as before instead of returning an empty queue. Next Up falls back to the front of the queue.
+- **Not applied to music or books:** Audio tracks, albums, artists, music genres, music videos, audiobooks, books, audio playlists, and anything inside a library of type Music, Music Videos, or Books are never filtered. Requests filtered by artist or album, or with `mediaTypes=Audio` or `Book`, are not filtered either.
+- **Explicit filters win:** If the request already sets `isPlayed` or `filters=IsPlayed/IsUnplayed`, the server does not change it.
 
-Before the project can be built, you must first install the [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet) on your system.
+## Install / Run
 
-Instructions to run this project from the command line are included here, but you will also need to install an IDE if you want to debug the server while it is running. Any IDE that supports .NET 6 development will work, but two options are recent versions of [Visual Studio](https://visualstudio.microsoft.com/downloads/) (at least 2022) and [Visual Studio Code](https://code.visualstudio.com/Download).
+Requirements:
 
-[ffmpeg](https://github.com/jellyfin/jellyfin-ffmpeg) will also need to be installed.
+- **Windows, Linux, or macOS** (64-bit)
+- **[jellyfin-ffmpeg](https://github.com/jellyfin/jellyfin-ffmpeg)** and **`jellyfin-web`** (from an existing Jellyfin 12.3 installation or built separately)
 
-### Cloning the Repository
+### Option A: Use a prebuilt release archive
 
-After dependencies have been installed you will need to clone a local copy of this repository. If you just want to run the server from source you can clone this repository directly, but if you are intending to contribute code changes to the project, you should [set up your own fork](https://jellyfin.org/docs/general/contributing/development.html#set-up-your-copy-of-the-repo) of the repository. The following example shows how you can clone the repository directly over HTTPS.
+1. Download the latest archive for your platform from this repository's [Releases](https://github.com/oiuy-retro/jellyfin-custom/releases) page and verify it against `SHA256SUMS` (`sha256sum -c SHA256SUMS`).
+2. **To run over an existing Jellyfin 12.3 installation on Windows:**
+   - Stop the `JellyfinServer` Windows service or tray app.
+   - Back up your existing `C:\Program Files\Jellyfin\Server` directory (and your data directory under `%ProgramData%\Jellyfin\Server` or `%LocalAppData%\jellyfin`).
+   - Copy the built server files from the release archive into `C:\Program Files\Jellyfin\Server` (keeping the existing `jellyfin-web` folder and `ffmpeg.exe`).
+   - Start Jellyfin again.
+3. **To run alongside an existing installation:**
+   - Extract the archive to its own folder and pass custom `--datadir`, `--configdir`, `--cachedir`, `--logdir`, and `--webdir` paths when starting `jellyfin.exe` (or `./jellyfin` on Linux).
 
-```bash
-git clone https://github.com/jellyfin/jellyfin.git
-```
-
-### Installing the Web Client
-
-The server is configured to host the static files required for the [web client](https://github.com/jellyfin/jellyfin-web) in addition to serving the backend by default. Before you can run the server, you will need to get a copy of the web client since they are not included in this repository directly.
-
-Note that it is recommended for development to [host the web client separately](#hosting-the-web-client-separately) from the web server with some additional configuration, in which case you can skip this step.
-
-There are two options to get the files for the web client.
-
-1. Build them from source following the instructions on the [jellyfin-web repository](https://github.com/jellyfin/jellyfin-web)
-2. Get the pre-built files from an existing installation of the server. For example, with a Windows server installation the client files are located at `C:\Program Files\Jellyfin\Server\jellyfin-web`
-
-### Running The Server
-
-The following instructions will help you get the project up and running via the command line, or your preferred IDE.
-
-#### Running With Visual Studio
-
-To run the project with Visual Studio you can open the Solution (`.sln`) file and then press `F5` to run the server.
-
-#### Running With Visual Studio Code
-
-To run the project with Visual Studio Code you will first need to open the repository directory with Visual Studio Code using the `Open Folder...` option.
-
-Second, you need to [install the recommended extensions for the workspace](https://code.visualstudio.com/docs/editor/extension-gallery#_recommended-extensions). Note that extension recommendations are classified as either "Workspace Recommendations" or "Other Recommendations", but only the "Workspace Recommendations" are required.
-
-After the required extensions are installed, you can run the server by pressing `F5`.
-
-#### Running From the Command Line
-
-To run the server from the command line you can use the `dotnet run` command. The example below shows how to do this if you have cloned the repository into a directory named `jellyfin` (the default directory name) and should work on all operating systems.
+### Option B: Run directly from a local build
 
 ```bash
-cd jellyfin                          # Move into the repository directory
-dotnet run --project Jellyfin.Server --webdir /absolute/path/to/jellyfin-web/dist # Run the server startup project
+dotnet run --project Jellyfin.Server --configuration Release -- --webdir "/path/to/jellyfin-web"
 ```
 
-A second option is to build the project and then run the resulting executable file directly. When running the executable directly you can easily add command line options. Add the `--help` flag to list details on all the supported command line options.
+## Building from source
 
-1. Build the project
+Short version (details and troubleshooting are in [docs/BUILDING.md](docs/BUILDING.md)):
+
+- **.NET 10.0 SDK** (`10.0.100` or newer; `global.json` rolls forward to the latest installed `10.0.x` SDK).
 
 ```bash
-dotnet build                       # Build the project
-cd Jellyfin.Server/bin/Debug/net10.0 # Change into the build output directory
+git clone https://github.com/oiuy-retro/jellyfin-custom.git
+cd jellyfin-custom
+git checkout fix/shuffle-resume
+dotnet publish Jellyfin.Server --configuration Release --output ./publish
 ```
 
-2. Execute the build output. On Linux, Mac, etc. use `./jellyfin` and on Windows use `jellyfin.exe`.
+For a self-contained Windows x64 build:
 
-#### Accessing the Hosted Web Client
+```bash
+dotnet publish Jellyfin.Server --configuration Release --runtime win-x64 --self-contained true --output ./publish-win-x64
+```
 
-If the Server is configured to host the Web Client, and the Server is running, the Web Client can be accessed at `http://localhost:8096` by default.
+The server executable is written to `./publish/jellyfin` (or `./publish-win-x64/jellyfin.exe` on Windows).
 
-API documentation can be viewed at `http://localhost:8096/api-docs/swagger/index.html`
+## Known limitations
 
+- **Server-side queue ordering:** When resuming from Continue Watching or Next Up, the client itself starts the playback session with its own local shuffle icon in its default (unhighlighted) state, because the client launched a single episode card rather than the series Shuffle button. Even though the client's shuffle icon is not lit, the queue of upcoming episodes loaded from the server is already in the saved random order.
+- **Season-level vs series-level shuffle:** If you click Shuffle on a specific season, resuming an episode from that season shuffles the remaining episodes of that season. If you later start an episode from a different season of the same show, the shuffle queue expands to the full series.
+- **Sequential Play button on a Series page in Jellyfin Web:** In Jellyfin Web, clicking the main Play button on a Series page first queries `GET /Shows/NextUp` and then calls `GET /Shows/{seriesId}/Episodes?startItemId={nextUpId}` with the same parameters as resuming an episode from the home screen. When shuffle is active for that series, clicking Play on the Series page in Jellyfin Web therefore resumes the shuffled queue. To switch a series back to sequential playback in Jellyfin Web, click Play on a Season page or toggle the shuffle button on and off inside the player controls.
+- **Skip-played scope:** Filtering is done by the server. Clients that shuffle locally from a list they already loaded (rather than asking the server for `sortBy=Random`) are not affected. In `GET /Items`, filtering uses the database's played flag, so a played item with a saved rewatch position is left out there.
+- **Paged random requests:** The all-played fallback in `GET /Items` only runs for the first page (`startIndex` 0 or unset).
+- **Testing:** Verified with unit tests in `SeriesShuffleManagerTests` (covering shuffle queue rotation on resume, JSON persistence across restarts, Next Up resolution on mid-episode stop and episode completion, in-player shuffle activation/deactivation, `TvShowsController.GetEpisodes` behavior, skip-played filtering with the all-played fallback and music exclusion, and Next Up skipping played episodes) and full Debug/Release builds of `Jellyfin.Server`.
 
-### Running from GitHub Codespaces
+## Staying in sync with upstream
 
-As Jellyfin will run on a container on a GitHub hosted server, JF needs to handle some things differently.
+This fork keeps upstream's git history, so new upstream versions can be merged in. Upstream's stable 12.x branch is `release-12.z` (tagged `v12.3`, etc.) and its development branch is `master`. The short version:
 
-**NOTE:** Depending on the selected configuration (if you just click 'create codespace' it will create a default configuration one) it might take 20-30 seconds to load all extensions and prepare the environment while VS Code is already open. Just give it some time and wait until you see `Downloading .NET version(s) 7.0.15~x64 ...... Done!` in the output tab.
+```bash
+git remote add upstream https://github.com/jellyfin/jellyfin.git   # once
+git fetch upstream --tags
+git checkout fix/shuffle-resume
+git merge upstream/release-12.z   # or a release tag, e.g. v12.4
+# resolve conflicts, build, run tests, push
+```
 
-**NOTE:** If you want to access the JF instance from outside, like with a WebClient on another PC, remember to set the "ports" in the lower VS Code window to public.
+The full walkthrough is in [docs/UPDATING_FROM_UPSTREAM.md](docs/UPDATING_FROM_UPSTREAM.md).
 
-**NOTE:** When first opening the server instance with any WebUI, you will be sent to the login instead of the setup page. Refresh the login page once and you should be redirected to the Setup.
+## More documentation
 
-There are two configurations for you to choose from.
-#### Default - Development Jellyfin Server
-This creates a container that has everything to run and debug the Jellyfin Media server but does not setup anything else. Each time you create a new container you have to run through the whole setup again. There is also no ffmpeg, webclient or media preloaded. Use the `.NET Launch (nowebclient)` launch config to start the server.
+- [CHANGELOG.md](CHANGELOG.md): what changed in each custom release
+- [docs/BUILDING.md](docs/BUILDING.md): build, publish, test, and troubleshooting instructions
+- [docs/CUSTOM_CHANGES.md](docs/CUSTOM_CHANGES.md): technical details of the custom server changes
+- [docs/UPDATING_FROM_UPSTREAM.md](docs/UPDATING_FROM_UPSTREAM.md): merging new upstream versions
+- [docs/ABOUT_JELLYFIN.md](docs/ABOUT_JELLYFIN.md): house-style overview of upstream Jellyfin and links to upstream docs
+- [docs/UPSTREAM_README.md](docs/UPSTREAM_README.md): the original upstream README
 
-> Keep in mind that as this has no web client you have to connect to it via an external client. This can be just another codespace container running the WebUI. vuejs does not work from the get-go as it does not support the setup steps.
+## License and credits
 
-#### Development Jellyfin Server ffmpeg
-this extends the default server with a default installation of ffmpeg6 though the means described here: https://jellyfin.org/docs/general/installation/linux#repository-manual
-If you want to install a specific ffmpeg version, follow the comments embedded in the `.devcontainer/Dev - Server Ffmpeg/install.ffmpeg.sh` file.
-
-Use the `ghcs .NET Launch (nowebclient, ffmpeg)` launch config to run with the jellyfin-ffmpeg enabled.
-
-
-### Running The Tests
-
-This repository also includes unit tests that are used to validate functionality as part of a CI pipeline on Azure. There are several ways to run these tests.
-
-1. Run tests from the command line using `dotnet test`
-2. Run tests in Visual Studio using the [Test Explorer](https://docs.microsoft.com/en-us/visualstudio/test/run-unit-tests-with-test-explorer)
-3. Run individual tests in Visual Studio Code using the associated [CodeLens annotation](https://github.com/OmniSharp/omnisharp-vscode/wiki/How-to-run-and-debug-unit-tests)
-
-### Advanced Configuration
-
-The following sections describe some more advanced scenarios for running the server from source that build upon the standard instructions above.
-
-#### Hosting The Web Client Separately
-
-It is not necessary to host the frontend web client as part of the backend server. Hosting these two components separately may be useful for frontend developers who would prefer to host the client in a separate webpack development server for a tighter development loop. See the [jellyfin-web](https://github.com/jellyfin/jellyfin-web#getting-started) repo for instructions on how to do this.
-
-To instruct the server not to host the web content, there is a `nowebclient` configuration flag that must be set. This can be specified using the command line
-switch `--nowebclient` or the environment variable `JELLYFIN_NOWEBCONTENT=true`.
-
-Since this is a common scenario, there is also a separate launch profile defined for Visual Studio called `Jellyfin.Server (nowebcontent)` that can be selected from the 'Start Debugging' dropdown in the main toolbar.
-
-**NOTE:** The setup wizard cannot be run if the web client is hosted separately.
-
----
-<p align="center">
-This project is supported by:
-<br/>
-<br/>
-<a href="https://www.jetbrains.com"><img src="https://gist.githubusercontent.com/anthonylavado/e8b2403deee9581e0b4cb8cd675af7db/raw/199ae22980ef5da64882ec2de3e8e5c03fe535b8/jetbrains.svg" height="50px" alt="JetBrains logo"></a>
-</p>
+Jellyfin is © the Jellyfin contributors, licensed under the
+[GNU General Public License v2.0](LICENSE). This custom build is a modified version of it and is
+distributed under the same license. Source files keep their original copyright headers. All credit
+for Jellyfin itself goes to the upstream authors: <https://github.com/jellyfin/jellyfin>.
